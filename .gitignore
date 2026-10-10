@@ -13,7 +13,6 @@ dist-ssr
 *.local
 
 # Editor directories and files
-.vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
@@ -23,10 +22,13 @@ dist-ssr
 *.sln
 *.sw?
 
-.env
 backend/.env
 alegia-web.zip
 node_modules
 dist
 __pycache__/
 *.pyc
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat

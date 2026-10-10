@@ -94,7 +94,7 @@ def _num(x, nd: int = 4):
         return None
 
 
-async def guardar_prediccion(usuario: dict, res: dict, origen: str, debate: dict | None = None) -> bool:
+async def guardar_prediccion(usuario: dict, res: dict, origen: str, debate: dict | None = None, consulta: str | None = None) -> bool:
     """Guarda una predicción del usuario ({"id","email"}). Nunca lanza excepciones: devuelve True/False."""
     if not (configurada() and usuario and usuario.get("id")):
         return False
@@ -103,6 +103,7 @@ async def guardar_prediccion(usuario: dict, res: dict, origen: str, debate: dict
         "user_id": usuario["id"],
         "user_email": usuario.get("email"),
         "origen": origen if origen in ("chat", "equipos") else "chat",
+        "consulta": (consulta or None) and consulta[:500],
         "equipo_local": res.get("equipo_local"),
         "equipo_visitante": res.get("equipo_visitante"),
         "prob_local": _num(res.get("prob_local")),
@@ -132,6 +133,33 @@ async def guardar_prediccion(usuario: dict, res: dict, origen: str, debate: dict
         return True
     except Exception as e:
         log.warning("No se pudo guardar la predicción en Supabase: %s", e)
+        return False
+
+
+async def guardar_consulta(usuario: dict, origen: str, consulta: str, respuesta: str | None = None, debate: dict | None = None) -> bool:
+    """Guarda una consulta sin datos del modelo (mensaje normal del chat o partido fuera de LaLiga)."""
+    if not (configurada() and usuario and usuario.get("id")):
+        return False
+    fila = {
+        "user_id": usuario["id"],
+        "user_email": usuario.get("email"),
+        "origen": origen if origen in ("chat_libre", "mensaje") else "mensaje",
+        "consulta": (consulta or "")[:500],
+        "respuesta": (respuesta or None) and respuesta[:4000],
+    }
+    if debate:
+        fila["apuesta_sugerida"] = debate.get("apuesta_recomendada") or None
+        fila["confianza"] = debate.get("confianza") or None
+        fila["veredicto"] = debate.get("conclusion_comentarista") or None
+    try:
+        async with _cliente() as c:
+            r = await c.post(f"{SUPABASE_URL}/rest/v1/{TABLA}", headers=_cabeceras({"Prefer": "return=minimal"}), json=fila)
+        if r.status_code >= 300:
+            log.error("Supabase rechazó la consulta (%s): %s", r.status_code, r.text[:300])
+            return False
+        return True
+    except Exception as e:
+        log.warning("No se pudo guardar la consulta en Supabase: %s", e)
         return False
 
 
