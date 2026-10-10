@@ -187,7 +187,7 @@ async def prediccion_equipos(req: EquiposRequest, authorization: str | None = He
             return {"error": "Fallo en modelo interno"}
         usuario = await db.usuario_desde_token(authorization)
         if usuario:  # solo usuarios con sesión: el historial se guarda sin hacer esperar la respuesta
-            _en_segundo_plano(db.guardar_prediccion(usuario, res, "equipos"))
+            _en_segundo_plano(db.guardar_prediccion(usuario, res, "equipos", consulta=f"{local} vs {visitante}"))
         return {"estado": "exito", "datos_matematicos": res}
     except Exception:
         log.exception("Error en /prediccion_equipos")
@@ -225,12 +225,13 @@ async def prediccion_debate(req: DebateRequest, authorization: str | None = Head
 
         respuesta = await debatir_prediccion(resultado_ml, texto_usuario)
 
-        if "error" not in resultado_ml:
-            usuario = await db.usuario_desde_token(authorization)
-            if usuario:
-                _en_segundo_plano(
-                    db.guardar_prediccion(usuario, resultado_ml, "chat", respuesta.get("debate_agentes") or {})
-                )
+        usuario = await db.usuario_desde_token(authorization)
+        if usuario:
+            debate = respuesta.get("debate_agentes") or {}
+            if "error" not in resultado_ml:
+                _en_segundo_plano(db.guardar_prediccion(usuario, resultado_ml, "chat", debate, consulta=texto_usuario))
+            else:  # partido fuera de LaLiga (selecciones, Champions...): se guarda la consulta y el veredicto
+                _en_segundo_plano(db.guardar_consulta(usuario, "chat_libre", texto_usuario, debate=debate))
 
         return {
             "estado": "exito",
@@ -244,9 +245,13 @@ async def prediccion_debate(req: DebateRequest, authorization: str | None = Head
 
 
 @app.post("/chat_ia")
-async def chat_ia_endpoint(data: ChatIARequest):
+async def chat_ia_endpoint(data: ChatIARequest, authorization: str | None = Header(default=None)):
     try:
-        return {"respuesta": await conversar_general(data.mensaje)}
+        respuesta = await conversar_general(data.mensaje)
+        usuario = await db.usuario_desde_token(authorization)
+        if usuario and isinstance(respuesta, str):
+            _en_segundo_plano(db.guardar_consulta(usuario, "mensaje", data.mensaje, respuesta))
+        return {"respuesta": respuesta}
     except Exception:
         log.exception("Error en /chat_ia")
         return {"error": ERROR_INTERNO}
