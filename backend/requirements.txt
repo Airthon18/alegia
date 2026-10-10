@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+httpx
+pydantic
+passlib
+mysql-connector-python
+python-dotenv
+pandas
+numpy
+scipy
+scikit-learn
+threadpoolctl
+# Opcional: activa el LSTM (si falta, el sistema sigue con ML + Poisson)
+# tensorflow-cpu
