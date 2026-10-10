@@ -1,29 +1,26 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { toast } from "sonner";
-import { ArrowLeft, Eye, EyeOff, Loader2, LogIn, MailCheck, Sparkles } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 
-type Vista = "login" | "registro" | "codigo";
-
-const MIN_PASSWORD = 8;
-const ESPERA_REENVIO = 60; // segundos entre un reenvío de código y el siguiente
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+function IconoGoogle() {
+  return (
+    <svg viewBox="0 0 48 48" className="h-5 w-5" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+      <path fill="#FBBC05" d="M10.53 28.59A14.5 14.5 0 0 1 9.5 24c0-1.59.28-3.14.76-4.59l-7.98-6.19A23.99 23.99 0 0 0 0 24c0 3.77.9 7.35 2.56 10.78l7.97-6.19z"/>
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+    </svg>
+  );
+}
 
 export function AuthModal() {
-  const { signInWithGoogle, signIn, signUp, verifyCode, resendCode, continueAsGuest } = useAuth();
-  const [vista, setVista] = useState<Vista>("login");
+  const { signInWithGoogle, continueAsGuest } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [verPassword, setVerPassword] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ fullName: "", email: "", password: "", confirmPassword: "" });
-  const [codigo, setCodigo] = useState("");
-  const [espera, setEspera] = useState(0);
 
   // Si el usuario vuelve atrás desde la página de Google, el navegador puede restaurar esta pantalla
-  // tal como estaba (con los botones bloqueados): se desbloquea.
+  // con el botón bloqueado: se desbloquea.
   useEffect(() => {
     const alVolver = (e: PageTransitionEvent) => {
       if (e.persisted) setLoading(false);
@@ -32,102 +29,16 @@ export function AuthModal() {
     return () => window.removeEventListener("pageshow", alVolver);
   }, []);
 
-  // Cuenta atrás para poder pedir otro código
-  useEffect(() => {
-    if (espera <= 0) return;
-    const t = setTimeout(() => setEspera((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [espera]);
-
-  const irA = (v: Vista) => {
-    setVista(v);
-    setError("");
-    setCodigo("");
-    setVerPassword(false);
-  };
-
-  const pedirCodigo = () => {
-    setEspera(ESPERA_REENVIO);
-    irA("codigo");
-  };
-
   const entrarConGoogle = async () => {
     setError("");
     setLoading(true);
     const { error: e } = await signInWithGoogle();
     if (e) {
-      // Sin error, el navegador ya se está yendo a Google y no hay nada más que hacer aquí
+      // Sin error, el navegador ya se está yendo a Google
       setError("No se pudo iniciar sesión con Google. Inténtalo de nuevo.");
       setLoading(false);
     }
   };
-
-  const enviarFormulario = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    setError("");
-
-    if (!EMAIL_RE.test(form.email.trim())) return setError("Escribe un correo válido.");
-    if (vista === "registro") {
-      if (form.fullName.trim().length < 2) return setError("Escribe tu nombre.");
-      if (form.password.length < MIN_PASSWORD) return setError(`La contraseña debe tener al menos ${MIN_PASSWORD} caracteres.`);
-      if (form.password !== form.confirmPassword) return setError("Las contraseñas no coinciden.");
-    }
-
-    setLoading(true);
-    try {
-      if (vista === "registro") {
-        const r = await signUp(form.email, form.password, form.fullName);
-        if (r.alreadyRegistered) {
-          setError(r.error ?? "Este correo ya está registrado. Inicia sesión.");
-          setVista("login");
-        } else if (r.error) setError(r.error);
-        else if (r.needsVerification) pedirCodigo();
-        // sin error ni verificación: la sesión ya está iniciada y la app cambia sola
-      } else {
-        const r = await signIn(form.email, form.password);
-        if (r.needsVerification) {
-          // Se había registrado pero nunca confirmó el correo: se le manda un código nuevo
-          const re = await resendCode(form.email);
-          if (re.error) setError(re.error);
-          else {
-            toast.info("Tu correo aún no está verificado. Te enviamos un código nuevo.");
-            pedirCodigo();
-          }
-        } else if (r.error) setError(r.error);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const verificar = async (ev: React.FormEvent) => {
-    ev.preventDefault();
-    setError("");
-    if (codigo.length < 6) return setError("Escribe el código que llegó a tu correo.");
-    setLoading(true);
-    const r = await verifyCode(form.email, codigo);
-    if (r.error) {
-      setError(r.error);
-      setLoading(false);
-    } else {
-      toast.success("¡Correo verificado! Bienvenido a alegIA.");
-      // la sesión se inicia sola; este modal desaparece
-    }
-  };
-
-  const reenviar = async () => {
-    if (espera > 0 || loading) return;
-    setError("");
-    const r = await resendCode(form.email);
-    if (r.error) setError(r.error);
-    else {
-      toast.success("Código reenviado. Revisa tu bandeja y la carpeta de spam.");
-      setEspera(ESPERA_REENVIO);
-    }
-  };
-
-  const campo = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
-  const esRegistro = vista === "registro";
 
   return (
     <>
@@ -275,135 +186,25 @@ export function AuthModal() {
               <p className="text-slate-400 text-sm font-light">Tu motor de análisis deportivo inteligente</p>
             </div>
 
-            {/* ───────── Vista: código de verificación ───────── */}
-            {vista === "codigo" ? (
-              <form onSubmit={verificar} className="space-y-4">
-                <div className="flex justify-center">
-                  <div className="w-14 h-14 rounded-full bg-violet-500/15 flex items-center justify-center">
-                    <MailCheck className="h-7 w-7 text-violet-300" />
-                  </div>
-                </div>
-                <h2 id="auth-titulo" className="auth-title" style={{ marginBottom: 4 }}>Revisa tu correo</h2>
-                <p className="text-slate-400 text-sm text-center">
-                  Enviamos un código a <strong className="text-white break-all">{form.email.trim().toLowerCase()}</strong>. Escríbelo para verificar tu cuenta.
-                </p>
+            <h2 id="auth-titulo" className="auth-title">Inicia sesión</h2>
 
-                <Input
-                  value={codigo}
-                  onChange={(e) => setCodigo(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  placeholder="······"
-                  aria-label="Código de verificación"
-                  autoFocus
-                  className="input-glass input-codigo"
-                />
+            {error && <div role="alert" className="auth-error">{error}</div>}
 
-                {error && <div role="alert" className="auth-error">{error}</div>}
+            <Button type="button" onClick={entrarConGoogle} disabled={loading} className="btn-google flex items-center justify-center gap-3">
+              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <IconoGoogle />}
+              Continuar con Google
+            </Button>
 
-                <Button type="submit" className="w-full btn-auth" disabled={loading || codigo.length < 6}>
-                  {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-                  Verificar y entrar
-                </Button>
+            <div className="mt-5 text-center">
+              <button type="button" className="auth-link" onClick={continueAsGuest} disabled={loading}>
+                Entrar como invitado
+              </button>
+              <p className="text-slate-500 text-xs">Como invitado no se guarda tu historial.</p>
+            </div>
 
-                <div className="text-center space-y-1">
-                  <div>
-                    <button type="button" className="auth-link" onClick={reenviar} disabled={espera > 0 || loading}>
-                      {espera > 0 ? `Reenviar código en ${espera}s` : "Reenviar código"}
-                    </button>
-                  </div>
-                  <button type="button" className="auth-link flex items-center gap-1 mx-auto" onClick={() => irA("registro")}>
-                    <ArrowLeft className="h-4 w-4" /> Cambiar de correo
-                  </button>
-                  <p className="text-slate-500 text-xs">¿No llega? Mira en spam o correo no deseado.</p>
-                </div>
-              </form>
-            ) : (
-              <>
-                {/* ───────── Vistas: iniciar sesión / crear cuenta ───────── */}
-                <h2 id="auth-titulo" className="auth-title">{esRegistro ? "Crear cuenta" : "Iniciar sesión"}</h2>
-
-                <Button type="button" onClick={entrarConGoogle} disabled={loading} className="btn-google flex items-center justify-center gap-3">
-                  {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <LogIn className="h-5 w-5" />}
-                  Continuar con Google
-                </Button>
-
-                <div className="auth-divider">o con tu correo</div>
-
-                {error && <div role="alert" className="auth-error">{error}</div>}
-
-                <form onSubmit={enviarFormulario} className="space-y-4" noValidate>
-                  {esRegistro && (
-                    <div>
-                      <Label htmlFor="fullName" className="label-glass">Nombre completo</Label>
-                      <Input id="fullName" value={form.fullName} onChange={campo("fullName")} placeholder="Ej. Ana García" autoComplete="name" className="input-glass" />
-                    </div>
-                  )}
-                  <div>
-                    <Label htmlFor="email" className="label-glass">Correo electrónico</Label>
-                    <Input id="email" type="email" value={form.email} onChange={campo("email")} placeholder="tu@correo.com" autoComplete="email" className="input-glass" />
-                  </div>
-                  <div>
-                    <Label htmlFor="password" className="label-glass">Contraseña</Label>
-                    <div className="relative">
-                      <Input
-                        id="password"
-                        type={verPassword ? "text" : "password"}
-                        value={form.password}
-                        onChange={campo("password")}
-                        placeholder="••••••••"
-                        autoComplete={esRegistro ? "new-password" : "current-password"}
-                        className="input-glass pr-12"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setVerPassword((v) => !v)}
-                        aria-label={verPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                      >
-                        {verPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                      </button>
-                    </div>
-                    {esRegistro && <p className="text-slate-500 text-xs mt-1">Mínimo {MIN_PASSWORD} caracteres.</p>}
-                  </div>
-                  {esRegistro && (
-                    <div>
-                      <Label htmlFor="confirmPassword" className="label-glass">Confirmar contraseña</Label>
-                      <Input
-                        id="confirmPassword"
-                        type={verPassword ? "text" : "password"}
-                        value={form.confirmPassword}
-                        onChange={campo("confirmPassword")}
-                        placeholder="••••••••"
-                        autoComplete="new-password"
-                        className="input-glass"
-                      />
-                    </div>
-                  )}
-
-                  <Button type="submit" className="w-full btn-auth" disabled={loading}>
-                    {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-                    {esRegistro ? "Registrarme" : "Entrar"}
-                  </Button>
-                </form>
-
-                <div className="mt-5 text-center space-y-1">
-                  <button type="button" className="auth-link" onClick={() => irA(esRegistro ? "login" : "registro")}>
-                    {esRegistro ? "¿Ya tienes cuenta? Inicia sesión" : "¿No tienes cuenta? Regístrate gratis"}
-                  </button>
-                  <div>
-                    <button type="button" className="auth-link" onClick={continueAsGuest} disabled={loading}>
-                      Entrar como invitado
-                    </button>
-                    <p className="text-slate-500 text-xs">Como invitado no se guarda tu historial.</p>
-                  </div>
-                </div>
-
-                <p className="text-slate-500 text-[11px] leading-relaxed text-center mt-5">
-                  Al continuar, guardamos tus consultas junto con tu correo para mostrarte tu historial.
-                </p>
-              </>
-            )}
+            <p className="text-slate-500 text-[11px] leading-relaxed text-center mt-5">
+              Al continuar, guardamos tus consultas junto con tu correo de Google para mostrarte tu historial.
+            </p>
           </div>
         </div>
       </div>
