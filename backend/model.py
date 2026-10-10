@@ -875,6 +875,12 @@ def obtener_equipos():
     return lista_equipos
 
 
+def obtener_equipos_actuales():
+    """Equipos que juegan la última temporada del CSV (excluye descendidos de años anteriores)."""
+    ult = df[df["season"] == df["season"].max()]
+    return sorted(set(ult["local"]) | set(ult["visitante"]))
+
+
 def predecir_partidos(local_in, visitante_in, dia_semana="sabado"):
     # `dia_semana` se conserva por compatibilidad con app.py; el modelo no lo usa.
     try:
@@ -953,7 +959,7 @@ def predecir_partidos(local_in, visitante_in, dia_semana="sabado"):
             "lstm_integrado": p_lstm is not None,
             "lstm_accuracy": round(_lstm_accuracy, 3) if _lstm_accuracy is not None else None,
             "lstm_f1": round(_lstm_f1, 3) if _lstm_f1 is not None else None,
-            "mercados": mercados,
+            "mercados": mercados
         }
 
     except Exception as e:

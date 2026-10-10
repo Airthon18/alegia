@@ -1,4 +1,5 @@
 import { useState, useEffect, useId, useRef } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 // ─── Config ───────────────────────────────────────────────
 // Se puede cambiar con VITE_API_URL en el .env del frontend (p. ej. al desplegar).
@@ -188,13 +189,25 @@ export const extraerPartido = (texto: string): { local: string; visitante: strin
   return { local, visitante };
 };
 
+// Token de la sesión de Supabase: el servidor lo usa para guardar las predicciones del usuario.
+// Si no hay sesión (invitado) no se manda nada y la app funciona igual, sin guardar historial.
+async function cabeceraSesion(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function fetchJson(path: string, body: unknown, timeoutMs: number) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${API}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await cabeceraSesion()) },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
@@ -456,202 +469,38 @@ function TablaLineas({ serie, color }: { serie: MercadoSerie; color: string }) {
   );
 }
 
-function MercadosCard({ mercados, local, visitante }: { mercados: Mercados; local: string; visitante: string }) {
-  const grupos = Array.isArray(mercados.grupos) ? mercados.grupos : [];
-  const uid = useId(); // ids únicos aunque haya varios análisis en pantalla
-  const [activo, setActivo] = useState<string>(grupos[0]?.id ?? "");
-  if (grupos.length === 0) return null;
-  const grupo = grupos.find((g) => g.id === activo) ?? grupos[0];
-  const color = COLOR_FIABILIDAD[grupo.fiabilidad] ?? "#888";
-  const destacados = Array.isArray(mercados.destacados) ? mercados.destacados : [];
-  const detalleValidacion = grupo.validacion
-    ? `Validado con ${grupo.validacion.partidos} partidos · mejora de ${grupo.validacion.mejora_logloss.toFixed(3)} en log loss sobre la frecuencia histórica`
-    : undefined;
-
-  return (
-    <div style={{ background: "#141414", border: "1px solid #222", borderRadius: 16, padding: 20, marginTop: 14, width: "100%", boxSizing: "border-box" }}>
-      <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 6, fontWeight: 600 }}>
-        📊 MERCADOS DE APUESTA
-      </div>
-      <p style={{ margin: "0 0 12px", fontSize: 11.5, lineHeight: 1.5, color: "#777" }}>{mercados.nota}</p>
-
-      {destacados.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
-            Destacados del modelo
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {destacados.map((d) => (
-              <span
-                key={`${d.grupo}-${d.nombre}`}
-                title={`${d.grupo_titulo} · fiabilidad ${d.fiabilidad}`}
-                style={{ fontSize: 12, color: "#e5e5e5", background: "#1a1a1a", border: `1px solid ${COLOR_FIABILIDAD[d.fiabilidad] ?? "#333"}55`, borderRadius: 10, padding: "5px 10px" }}
-              >
-                {d.nombre} · <strong>{pct(d.prob)}</strong> <span style={{ color: "#888" }}>@{cuotaTxt(d.cuota)}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div role="tablist" aria-label="Mercados" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-        {grupos.map((g) => {
-          const sel = g.id === grupo.id;
-          const c = COLOR_FIABILIDAD[g.fiabilidad] ?? "#888";
-          return (
-            <button
-              key={g.id}
-              type="button"
-              role="tab"
-              id={`${uid}-tab-${g.id}`}
-              aria-selected={sel}
-              aria-controls={`${uid}-panel`}
-              onClick={() => setActivo(g.id)}
-              title={`Fiabilidad ${g.fiabilidad}`}
-              style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: sel ? 700 : 500, color: sel ? "#fff" : "#999", background: sel ? "#26262a" : "#1a1a1a", border: `1px solid ${sel ? "#44444c" : "#262626"}`, borderRadius: 999, padding: "5px 12px", display: "inline-flex", alignItems: "center", gap: 6 }}
-            >
-              <span aria-hidden style={{ width: 7, height: 7, borderRadius: "50%", background: c, display: "inline-block" }} />
-              {g.titulo}
-            </button>
-          );
-        })}
-      </div>
-
-      <div role="tabpanel" id={`${uid}-panel`} aria-labelledby={`${uid}-tab-${grupo.id}`}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <BadgeFiabilidad nivel={grupo.fiabilidad} detalle={detalleValidacion} />
-          <span style={{ fontSize: 11.5, color: "#888", flex: "1 1 240px" }}>
-            {grupo.nota}
-            {grupo.validacion ? ` (validado con ${grupo.validacion.partidos} partidos)` : ""}
-          </span>
-        </div>
-
-        {grupo.esperado && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12, fontSize: 12, color: "#aaa" }}>
-            <span>Esperado {local}: <strong style={{ color: teamColor(local) }}>{grupo.esperado.local.toFixed(2)}</strong></span>
-            <span>Esperado {visitante}: <strong style={{ color: teamColor(visitante) }}>{grupo.esperado.visitante.toFixed(2)}</strong></span>
-            <span>Total: <strong style={{ color: "#fff" }}>{grupo.esperado.total.toFixed(2)}</strong></span>
-          </div>
-        )}
-
-        {grupo.tipo === "lineas" && grupo.series && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-            {grupo.series.map((se) => (
-              <TablaLineas key={se.ambito} serie={se} color={color} />
-            ))}
-          </div>
-        )}
-
-        {grupo.tipo === "lista" && grupo.items && (
-          <div style={{ background: "#0d0d0d", border: "0.5px solid #222", borderRadius: 10, overflow: "hidden" }}>
-            {grupo.items.map((it) => (
-              <FilaMercado key={it.nombre} item={it} color={color} />
-            ))}
-          </div>
-        )}
-
-        <p style={{ margin: "12px 0 0", fontSize: 10.5, color: "#666" }}>
-          @ = cuota justa del modelo. Compárala con la cuota real: solo hay valor si la real es mayor. Análisis orientativo: ninguna apuesta es segura.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function AgentBlock({
-  title,
-  color,
-  bg,
-  border,
-  children,
-}: {
-  title: string;
-  color: string;
-  bg: string;
-  border: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 12, padding: 14 }}>
-      <div style={{ fontSize: 11, color, fontWeight: 700, marginBottom: 6, letterSpacing: "0.5px" }}>{title}</div>
-      <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.5, color: "#cbd5e1" }}>{children}</p>
-    </div>
-  );
-}
-
 export function PanelDebate({ msg }: { msg: ChatMessage }) {
   if (!msg.debate || !msg.data) return null;
   const { debate, data } = msg;
-  const esLibre = msg.modo === "libre";
   const sinAgentes = debate._agentes_ok === 0;
   const noFiable = data.estimacion_fiable === false;
 
+  // En el chat solo se muestra el veredicto final. El análisis de los agentes y los mercados
+  // se calculan en el servidor pero no se enseñan aquí (los mercados están en "Por equipos").
   return (
-    <div style={{ width: "100%", animation: "fadeIn 0.4s ease-out", marginTop: 6 }}>
-      <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, fontWeight: 600 }}>
-        {esLibre ? "✨ ANÁLISIS GLOBAL LIBRE (HISTÓRICO / IA)" : "⚡ ANÁLISIS GLOBAL MULTIAGENTE (MODELO ML)"}
-      </div>
-
+    <div style={{ width: "100%", maxWidth: 820, animation: "fadeIn 0.4s ease-out", marginTop: 6 }}>
       {(sinAgentes || noFiable) && (
         <div role="alert" style={{ background: "#2a1212", border: "1px solid #7f1d1d", color: "#fca5a5", borderRadius: 12, padding: "10px 14px", fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>
           ⚠ Los agentes de IA no respondieron (revisa las claves de API del servidor).{" "}
-          {noFiable
-            ? "Las cifras de la derecha son valores por defecto y NO constituyen una predicción."
-            : "Solo se muestran las cifras del modelo estadístico."}
+          {noFiable ? "No hay una predicción fiable para este partido." : "El veredicto se basa solo en el modelo estadístico."}
         </div>
       )}
 
-      <div style={{ background: "#141414", border: "1px solid #222", borderRadius: 16, padding: 20, display: "flex", flexWrap: "wrap", gap: 20, width: "100%" }}>
-        <div style={{ flex: "1 1 550px", display: "flex", flexDirection: "column", gap: 14 }}>
-          <AgentBlock title="DATA CORE" color="#818cf8" bg="#1a1e3625" border="#312e8155">
-            {debate.analisis_estadistico}
-          </AgentBlock>
-          <AgentBlock title="COACH AI" color="#6ee7b7" bg="#132a1e25" border="#064e3b55">
-            {debate.analisis_tactico}
-          </AgentBlock>
-          <AgentBlock title="TIPSTER" color="#d8b4fe" bg="#2d1b3625" border="#6b21a855">
-            {debate.analisis_betting}
-          </AgentBlock>
-
-          {debate.punto_de_conflicto && !sinAgentes && (
-            <AgentBlock title="PUNTO DE DESACUERDO" color="#fda4af" bg="#2a121825" border="#9f123955">
-              {debate.punto_de_conflicto}
-            </AgentBlock>
-          )}
-          {debate.noticias_clave && !sinAgentes && debate.noticias_clave !== "Sin noticias." && (
-            <AgentBlock title="NOTICIAS CLAVE" color="#7dd3fc" bg="#071f2a35" border="#0891b255">
-              {debate.noticias_clave}
-            </AgentBlock>
-          )}
-
-          <div style={{ background: "#221a0225", border: "1px solid #854d0e55", borderLeft: "4px solid #fbbf24", borderRadius: "4px 12px 12px 4px", padding: 14, marginTop: 4 }}>
-            <div style={{ fontSize: 11, color: "#fbbf24", fontWeight: 700, marginBottom: 6, letterSpacing: "0.5px" }}>
-              ⚡ VERDICTO DEL MODERADOR
-            </div>
-            <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#fde68a" }}>{msg.content}</p>
-            {!sinAgentes && debate.apuesta_recomendada && debate.apuesta_recomendada !== "N/A" && (
-              <p style={{ margin: "10px 0 0", fontSize: 13, color: "#fbbf24" }}>
-                <strong>Apuesta sugerida:</strong> {debate.apuesta_recomendada}
-                {debate.confianza ? ` · Confianza ${debate.confianza.toLowerCase()}` : ""}
-              </p>
-            )}
-            <p style={{ margin: "10px 0 0", fontSize: 11, color: "#7c6a2a" }}>
-              Análisis orientativo: ninguna apuesta es segura.
-            </p>
-          </div>
+      <div style={{ background: "#221a0225", border: "1px solid #854d0e55", borderLeft: "4px solid #fbbf24", borderRadius: "4px 12px 12px 4px", padding: 14 }}>
+        <div style={{ fontSize: 11, color: "#fbbf24", fontWeight: 700, marginBottom: 6, letterSpacing: "0.5px" }}>
+          ⚡ VERDICTO DEL MODERADOR
         </div>
-
-        <div style={{ flex: "1 1 360px", minWidth: 320, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, fontWeight: 600 }}>
-            {esLibre ? "📋 ESTIMACIONES CALCULADAS" : "📋 DATOS PREDICTORIOS"}
-          </div>
-          <PredCard data={data} esLibre={esLibre} />
-        </div>
+        <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#fde68a" }}>{msg.content}</p>
+        {!sinAgentes && debate.apuesta_recomendada && debate.apuesta_recomendada !== "N/A" && (
+          <p style={{ margin: "10px 0 0", fontSize: 13, color: "#fbbf24" }}>
+            <strong>Apuesta sugerida:</strong> {debate.apuesta_recomendada}
+            {debate.confianza ? ` · Confianza ${debate.confianza.toLowerCase()}` : ""}
+          </p>
+        )}
+        <p style={{ margin: "10px 0 0", fontSize: 11, color: "#7c6a2a" }}>
+          Análisis orientativo: ninguna apuesta es segura.
+        </p>
       </div>
-
-      {!esLibre && data.mercados && (
-        <MercadosCard mercados={data.mercados} local={data.equipo_local} visitante={data.equipo_visitante} />
-      )}
     </div>
   );
 }
@@ -664,7 +513,7 @@ const BUBBLE_STYLE: Record<string, React.CSSProperties> = {
 };
 
 // ─── Main Component ───────────────────────────────────────
-export default function Prediccion() {
+function ChatPrediccion() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const [inputText, setInputText] = useState("");
@@ -756,7 +605,7 @@ export default function Prediccion() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", background: "#0d0d0d", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#fff", width: "100%", height: "calc(100vh - var(--header-h, 60px))", minHeight: "calc(100vh - var(--header-h, 60px))", overflow: "hidden" }}>
+    <div style={{ display: "flex", flexDirection: "column", background: "#0d0d0d", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#fff", width: "100%", height: "100%", minHeight: 0, overflow: "hidden" }}>
       <div
         role="log"
         aria-live="polite"
@@ -839,6 +688,306 @@ export default function Prediccion() {
           0%, 80%, 100% { opacity: 0.3; transform: scale(0.9); }
           40% { opacity: 1; transform: scale(1.1); }
         }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+
+// ─── Pestaña "Por equipos": elige local y visitante de LaLiga ─────────────
+const TITULOS_IDS_PRINCIPALES = new Set(["resultado", "goles"]);
+
+function GrupoCard({ grupo, local, visitante }: { grupo: MercadoGrupo; local: string; visitante: string }) {
+  const color = COLOR_FIABILIDAD[grupo.fiabilidad] ?? "#888";
+  const detalle = grupo.validacion
+    ? `Validado con ${grupo.validacion.partidos} partidos · mejora de ${grupo.validacion.mejora_logloss.toFixed(3)} en log loss sobre la frecuencia histórica`
+    : undefined;
+  return (
+    <section
+      aria-label={grupo.titulo}
+      style={{ background: "#141414", border: "1px solid #222", borderTop: `3px solid ${color}`, borderRadius: 14, padding: 16, display: "flex", flexDirection: "column", gap: 10, minWidth: 0, boxSizing: "border-box", gridColumn: grupo.tipo === "lineas" ? "1 / -1" : undefined }}
+    >
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#fff" }}>{grupo.titulo}</h3>
+        <BadgeFiabilidad nivel={grupo.fiabilidad} detalle={detalle} />
+      </div>
+      <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.45, color: "#777" }}>
+        {grupo.nota}
+        {grupo.validacion ? ` (validado con ${grupo.validacion.partidos} partidos)` : ""}
+      </p>
+
+      {grupo.esperado && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 12, color: "#aaa" }}>
+          <span>{local}: <strong style={{ color: teamColor(local) }}>{grupo.esperado.local.toFixed(2)}</strong></span>
+          <span>{visitante}: <strong style={{ color: teamColor(visitante) }}>{grupo.esperado.visitante.toFixed(2)}</strong></span>
+          <span>Total: <strong style={{ color: "#fff" }}>{grupo.esperado.total.toFixed(2)}</strong></span>
+        </div>
+      )}
+
+      {grupo.tipo === "lineas" && grupo.series && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+          {grupo.series.map((se) => (
+            <TablaLineas key={se.ambito} serie={se} color={color} />
+          ))}
+        </div>
+      )}
+
+      {grupo.tipo === "lista" && grupo.items && (
+        <div style={{ background: "#0d0d0d", border: "0.5px solid #222", borderRadius: 10, overflow: "hidden" }}>
+          {grupo.items.map((it) => (
+            <FilaMercado key={it.nombre} item={it} color={color} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SelectorEquipo({
+  etiqueta,
+  valor,
+  onChange,
+  equipos,
+  deshabilitado,
+}: {
+  etiqueta: string;
+  valor: string;
+  onChange: (v: string) => void;
+  equipos: string[];
+  deshabilitado?: string;
+}) {
+  const id = useId();
+  return (
+    <div style={{ flex: "1 1 220px", display: "flex", alignItems: "center", gap: 12, background: "#141414", border: "1px solid #222", borderRadius: 14, padding: "12px 14px", minWidth: 0 }}>
+      {valor ? <TeamCircle name={valor} size={46} /> : <div style={{ width: 46, height: 46, borderRadius: "50%", border: "1.5px dashed #333", flexShrink: 0 }} />}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <label htmlFor={id} style={{ display: "block", fontSize: 10, color: "#777", textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 4, fontWeight: 600 }}>
+          {etiqueta}
+        </label>
+        <select
+          id={id}
+          value={valor}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ width: "100%", background: "#1c1c1c", color: "#ececec", border: "0.5px solid #2e2e2e", borderRadius: 10, padding: "9px 10px", fontSize: 14, fontFamily: "inherit", outline: "none", cursor: "pointer" }}
+        >
+          <option value="">Elige un equipo…</option>
+          {equipos.map((e) => (
+            <option key={e} value={e} disabled={e === deshabilitado}>
+              {e}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function PrediccionEquipos() {
+  const [equipos, setEquipos] = useState<string[]>([]);
+  const [errorEquipos, setErrorEquipos] = useState(false);
+  const [local, setLocal] = useState("");
+  const [visitante, setVisitante] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [data, setData] = useState<PrediccionMatematica | null>(null);
+  const [segundos, setSegundos] = useState(0);
+
+  const cargarEquipos = () => {
+    setErrorEquipos(false);
+    fetch(`${API}/equipos_liga`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((j) => setEquipos(Array.isArray(j.equipos) ? j.equipos : []))
+      .catch(() => setErrorEquipos(true));
+  };
+  useEffect(cargarEquipos, []);
+
+  useEffect(() => {
+    if (!cargando) {
+      setSegundos(0);
+      return;
+    }
+    const t = setInterval(() => setSegundos((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [cargando]);
+
+  const puede = !!local && !!visitante && local !== visitante && !cargando;
+
+  const predecir = async () => {
+    if (!puede) return;
+    setCargando(true);
+    setError("");
+    try {
+      const json = await fetchJson("/prediccion_equipos", { local, visitante }, 90_000);
+      if (json.error) throw new Error(json.error);
+      setData(json.datos_matematicos as PrediccionMatematica);
+    } catch (e) {
+      setData(null);
+      const cortado = e instanceof DOMException && e.name === "AbortError";
+      setError(cortado ? "Tardó demasiado. El servidor puede estar despertando: inténtalo de nuevo." : "No se pudo calcular el partido. Comprueba que el servidor esté en marcha.");
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const intercambiar = () => {
+    setLocal(visitante);
+    setVisitante(local);
+    setData(null);
+  };
+
+  const m = data?.mercados;
+  const grupos = Array.isArray(m?.grupos) ? m!.grupos : [];
+  const destacados = Array.isArray(m?.destacados) ? m!.destacados : [];
+  const principales = grupos.filter((g) => TITULOS_IDS_PRINCIPALES.has(g.id));
+  const resto = grupos.filter((g) => !TITULOS_IDS_PRINCIPALES.has(g.id));
+
+  return (
+    <div style={{ height: "100%", overflowY: "auto", background: "#0d0d0d", fontFamily: "'DM Sans', system-ui, sans-serif", color: "#fff" }}>
+      <div style={{ maxWidth: 1150, margin: "0 auto", padding: "24px 16px 40px", display: "flex", flexDirection: "column", gap: 18 }}>
+        <div>
+          <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: "1px", fontWeight: 600 }}>LaLiga · temporada actual</div>
+          <h2 style={{ margin: "4px 0 0", fontSize: 22 }}>Elige los dos equipos</h2>
+        </div>
+
+        {errorEquipos && (
+          <div role="alert" style={{ background: "#2a1212", border: "1px solid #7f1d1d", color: "#fca5a5", borderRadius: 12, padding: "10px 14px", fontSize: 13 }}>
+            No se pudo cargar la lista de equipos.{" "}
+            <button type="button" onClick={cargarEquipos} style={{ background: "none", border: "none", color: "#fff", textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: 13, padding: 0 }}>
+              Reintentar
+            </button>
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+          <SelectorEquipo etiqueta="Local" valor={local} onChange={(v) => { setLocal(v); setData(null); }} equipos={equipos} deshabilitado={visitante} />
+          <button
+            type="button"
+            onClick={intercambiar}
+            disabled={!local && !visitante}
+            aria-label="Intercambiar local y visitante"
+            title="Intercambiar"
+            style={{ width: 40, height: 40, borderRadius: "50%", background: "#1c1c1c", border: "0.5px solid #2e2e2e", color: "#ccc", cursor: !local && !visitante ? "not-allowed" : "pointer", fontSize: 16, flexShrink: 0 }}
+          >
+            ⇄
+          </button>
+          <SelectorEquipo etiqueta="Visitante" valor={visitante} onChange={(v) => { setVisitante(v); setData(null); }} equipos={equipos} deshabilitado={local} />
+        </div>
+
+        <button
+          type="button"
+          onClick={predecir}
+          disabled={!puede}
+          style={{ alignSelf: "flex-start", padding: "12px 26px", borderRadius: 24, border: "none", background: puede ? "#ff6b35" : "#2a2a2a", color: "#fff", fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: puede ? "pointer" : "not-allowed" }}
+        >
+          {cargando ? `Calculando…${segundos >= 3 ? ` ${segundos}s` : ""}` : "⚡ Generar predicciones"}
+        </button>
+
+        {error && (
+          <div role="alert" style={{ color: "#ef4444", fontSize: 13 }}>
+            {error}
+          </div>
+        )}
+
+        {data && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, animation: "fadeIn 0.4s ease-out" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, alignItems: "stretch" }}>
+              <PredCard data={data} esLibre={false} />
+              {destacados.length > 0 && (
+                <section aria-label="Destacados del modelo" style={{ background: "#141414", border: "1px solid #222", borderRadius: 14, padding: 16, boxSizing: "border-box" }}>
+                  <h3 style={{ margin: "0 0 4px", fontSize: 15 }}>⭐ Destacados del modelo</h3>
+                  <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "#777", lineHeight: 1.45 }}>{m?.nota}</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {destacados.map((d) => (
+                      <div
+                        key={`${d.grupo}-${d.nombre}`}
+                        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: "#1a1a1a", border: `1px solid ${COLOR_FIABILIDAD[d.fiabilidad] ?? "#333"}44`, borderRadius: 10, padding: "8px 12px" }}
+                      >
+                        <span style={{ fontSize: 12.5, color: "#e5e5e5", minWidth: 0 }}>
+                          {d.nombre}
+                          <span style={{ display: "block", fontSize: 10, color: "#666" }}>{d.grupo_titulo} · fiabilidad {d.fiabilidad}</span>
+                        </span>
+                        <span style={{ flexShrink: 0, fontSize: 12.5 }}>
+                          <strong>{pct(d.prob)}</strong> <span style={{ color: "#888" }}>@{cuotaTxt(d.cuota)}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, alignItems: "start", gridAutoFlow: "dense" }}>
+              {[...principales, ...resto].map((g) => (
+                <GrupoCard key={g.id} grupo={g} local={data.equipo_local} visitante={data.equipo_visitante} />
+              ))}
+            </div>
+
+            <p style={{ margin: 0, fontSize: 10.5, color: "#666" }}>
+              @ = cuota justa del modelo (sin margen de la casa). Compárala con la cuota real: solo hay valor si la real es mayor. Análisis orientativo: ninguna apuesta es segura.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Página: dos apartados (chat IA y selección de equipos) ───────────────
+type Pestana = "chat" | "equipos";
+
+export default function Prediccion() {
+  // Inicio puede pedir abrir directamente una pestaña (sessionStorage, clave alegia_prediccion_tab).
+  const [tab, setTab] = useState<Pestana>(() => {
+    try {
+      return sessionStorage.getItem("alegia_prediccion_tab") === "equipos" ? "equipos" : "chat";
+    } catch {
+      return "chat";
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem("alegia_prediccion_tab");
+    } catch {
+      /* sin storage */
+    }
+  }, []);
+  const tabs: { id: Pestana; label: string }[] = [
+    { id: "chat", label: "💬 Chat IA" },
+    { id: "equipos", label: "⚽ Por equipos (LaLiga)" },
+  ];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", background: "#0d0d0d", width: "100%", height: "calc(100vh - var(--header-h, 60px))", minHeight: "calc(100vh - var(--header-h, 60px))", overflow: "hidden", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div role="tablist" aria-label="Tipo de predicción" style={{ display: "flex", gap: 8, padding: "12px 16px 0", maxWidth: 1150, margin: "0 auto", width: "100%", boxSizing: "border-box", flexShrink: 0, overflowX: "auto" }}>
+        {tabs.map((t) => {
+          const sel = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={sel}
+              onClick={() => setTab(t.id)}
+              style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: sel ? 700 : 500, color: sel ? "#fff" : "#999", background: sel ? "#26262a" : "#141414", border: `1px solid ${sel ? "#ff6b35" : "#262626"}`, borderRadius: 999, padding: "8px 18px", whiteSpace: "nowrap" }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: tab === "chat" ? "block" : "none" }}>
+        <ChatPrediccion />
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: tab === "equipos" ? "block" : "none" }}>
+        <PrediccionEquipos />
+      </div>
+      <style>{`
         @keyframes fadeIn {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }

@@ -27,9 +27,12 @@ export default function Index() {
   return (
     <AppLayout>
       {(section, setSection) => {
+        // Los botones del Inicio ("Hablar con alegIA" / "Elegir equipos") llevan a la sección
+        // "prediccion"; Home guarda qué pestaña abrir y Prediccion la lee al montarse.
+        const irAPrediccion = () => setSection("prediccion");
         switch (section) {
           case "home":
-            return <Home onNavigateChat={() => setSection("chat")} />;
+            return <Home onNavigateChat={irAPrediccion} />;
           case "account":
             return <Account />;
           case "news":
@@ -39,7 +42,7 @@ export default function Index() {
           case "prediccion":
             return <Prediccion />;
           default:
-            return <Home onNavigateChat={() => setSection("chat")} />;
+            return <Home onNavigateChat={irAPrediccion} />;
         }
       }}
     </AppLayout>
