@@ -25,9 +25,18 @@ except ImportError:
 from fastapi import FastAPI, Header
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import db
+import api_football
+import en_vivo
+import footystats
+import prediccion_fs
+import pronosticos_previos
+import reloj
+import vinculos
+from footystats import FootyStatsError
 from ia import conversar_general, debatir_prediccion, estado_proveedores
 from model import obtener_equipos, obtener_equipos_actuales, predecir_partidos
 from noticias import obtener_noticias
@@ -169,6 +178,146 @@ async def noticias():
 def equipos_liga():
     """Equipos de la temporada actual (para el selector de la pestaña 'Por equipos')."""
     return {"liga": "LaLiga", "equipos": obtener_equipos_actuales()}
+
+
+# Estado HTTP por causa de fallo de FootyStats: así el frontend distingue credenciales, conexión y límite.
+_ESTADO_FOOTYSTATS = {"credenciales": 502, "conexion": 503, "limite": 429, "respuesta": 502}
+
+
+def _error_footystats(e: FootyStatsError) -> JSONResponse:
+    return JSONResponse({"error": e.mensaje, "tipo": e.tipo}, status_code=_ESTADO_FOOTYSTATS.get(e.tipo, 502))
+
+
+@app.get("/api/ligas")
+async def api_ligas():
+    """Competiciones activas de la cuenta de FootyStats (se consulta a la API en cada petición)."""
+    try:
+        return {"ligas": await footystats.listar_ligas()}
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    except Exception:
+        log.exception("Error en /api/ligas")
+        return JSONResponse({"error": ERROR_INTERNO, "tipo": "interno"}, status_code=500)
+
+
+@app.get("/api/temporadas/{season_id}/partidos")
+async def api_partidos_temporada(season_id: int):
+    """Próximos partidos de una temporada, ordenados por fecha (lista vacía si no hay pendientes)."""
+    try:
+        return {"season_id": season_id, "partidos": await footystats.proximos_partidos(season_id)}
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    except Exception:
+        log.exception("Error en /api/temporadas/%s/partidos", season_id)
+        return JSONResponse({"error": ERROR_INTERNO, "tipo": "interno"}, status_code=500)
+
+
+@app.get("/api/reloj")
+async def api_reloj():
+    """Diagnóstico: reloj del servidor frente a la hora UTC de referencia (cabecera Date de FootyStats)."""
+    await reloj.asegurar()
+    return {**reloj.info(), "ahora_utc_unix": int(reloj.ahora()), "aviso": reloj.aviso()}
+
+
+@app.get("/api/en-vivo")
+async def api_en_vivo():
+    """
+    Partidos en curso (y los que están por empezar o acaban de terminar) de TODAS las competiciones de la cuenta.
+    Una consulta global compartida entre usuarios (caché de 60 s). Si FootyStats falla, responde con el tipo de error
+    (credenciales, conexión, límite) en lugar de una lista vacía: "falló la consulta" no es "no hay partidos".
+    """
+    try:
+        return await en_vivo.en_vivo(ids_con_pronostico=pronosticos_previos.ids_guardados)
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    except Exception:
+        log.exception("Error en /api/en-vivo")
+        return JSONResponse({"error": ERROR_INTERNO, "tipo": "interno"}, status_code=500)
+
+
+_cobertura_cache: dict = {"t": 0.0, "ligas_af": None}
+
+
+@app.get("/api/en-vivo/cobertura")
+async def api_cobertura_en_vivo():
+    """
+    Cobertura de tus competiciones en la fuente en vivo (API-Football): "confirmada" si ya se emparejó un partido real,
+    "probable" si existe una liga equivalente, "sin_equivalente" o "sin_verificar" (sin clave). Una consulta al día como mucho.
+    """
+    try:
+        ligas = await footystats.ligas_cacheadas()
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    if not api_football.configurada():
+        return {"fuente_vivo": "pendiente_configurar", "detalle": "Falta API_FOOTBALL_KEY en backend/.env", "ligas": vinculos.cobertura(ligas, None)}
+    try:
+        if _cobertura_cache["ligas_af"] is None or reloj.ahora() - _cobertura_cache["t"] > 24 * 3600:
+            _cobertura_cache.update({"ligas_af": await api_football.ligas_actuales(), "t": reloj.ahora()})
+    except api_football.APIFootballError as e:
+        return {"fuente_vivo": "desconectada", "detalle": e.mensaje, "tipo": e.tipo, "ligas": vinculos.cobertura(ligas, None)}
+    return {"fuente_vivo": "conectada", "consultado_unix": int(_cobertura_cache["t"]), "ligas": vinculos.cobertura(ligas, _cobertura_cache["ligas_af"])}
+
+
+@app.get("/api/partidos/{match_id}/prediccion-en-vivo")
+async def api_prediccion_en_vivo(match_id: int):
+    """
+    Predicción con el marcador y el minuto CONFIRMADOS por la fuente en vivo. Parte de la fuerza previa de los equipos y de
+    lo que queda de los 90 minutos. Incluye el pronóstico previo por separado para compararlos.
+    """
+    try:
+        estado = en_vivo.ULTIMO.get(match_id)
+        if estado is None:
+            await en_vivo.en_vivo(ids_con_pronostico=pronosticos_previos.ids_guardados)  # usa la caché compartida
+            estado = en_vivo.ULTIMO.get(match_id)
+        if estado is None:
+            return JSONResponse({"error": "Ese partido no figura entre los partidos de hoy", "tipo": "no_encontrado"}, status_code=404)
+        marcador = estado.get("marcador") or {}
+        if estado["estado"] not in ("en_juego", "descanso", "prorroga", "penales", "finalizado") or marcador.get("estado") != "confirmado":
+            return JSONResponse({"error": "No hay marcador y minuto confirmados en vivo para este partido", "tipo": "sin_datos_confirmados"}, status_code=409)
+        vivo = {
+            "fase": estado.get("fase") or ("final" if estado["estado"] == "finalizado" else None),
+            "minuto": estado.get("minuto"),
+            "minuto_extra": estado.get("minuto_extra"),
+            "marcador": {"local": marcador["local"], "visitante": marcador["visitante"]},
+            "resultado_90": estado.get("resultado_90") or ({"local": marcador["local"], "visitante": marcador["visitante"]} if estado["estado"] == "finalizado" else None),
+            "prorroga": estado.get("prorroga"),
+            "penales": estado.get("penales"),
+            "dato_unix": marcador.get("recibido_unix"),
+            "consultado_unix": estado.get("consultado_unix"),
+        }
+        res = await prediccion_fs.prediccion_en_vivo(estado["comp"], match_id, vivo)
+        if res is None:
+            return JSONResponse({"error": "No se encontró el partido en el historial de FootyStats", "tipo": "no_encontrado"}, status_code=404)
+        return {**res, "estado_partido": estado["estado"], "senal_atrasada": estado.get("senal_atrasada", False), "fuente": estado.get("fuente")}
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    except Exception:
+        log.exception("Error en /api/partidos/%s/prediccion-en-vivo", match_id)
+        return JSONResponse({"error": ERROR_INTERNO, "tipo": "interno"}, status_code=500)
+
+
+@app.get("/api/partidos/{match_id}/pronostico-previo")
+async def api_pronostico_previo(match_id: int):
+    """Pronóstico que se mostró antes del inicio del partido (no se recalcula)."""
+    guardado = pronosticos_previos.obtener(match_id)
+    if not guardado:
+        return JSONResponse({"error": "No hay un pronóstico guardado antes del inicio de este partido", "tipo": "sin_pronostico"}, status_code=404)
+    return guardado
+
+
+@app.get("/api/temporadas/{season_id}/partidos/{match_id}/prediccion")
+async def api_prediccion_partido(season_id: int, match_id: int, detalle: bool = False):
+    """Predicción de un partido real con el historial de FootyStats: resumen, o todos los mercados con ?detalle=true."""
+    try:
+        res = await prediccion_fs.predecir_partido(season_id, match_id, detalle)
+        if res is None:
+            return JSONResponse({"error": "Partido no encontrado en esa temporada", "tipo": "no_encontrado"}, status_code=404)
+        return res
+    except FootyStatsError as e:
+        return _error_footystats(e)
+    except Exception:
+        log.exception("Error en /api/temporadas/%s/partidos/%s/prediccion", season_id, match_id)
+        return JSONResponse({"error": ERROR_INTERNO, "tipo": "interno"}, status_code=500)
 
 
 @app.post("/prediccion_equipos")
