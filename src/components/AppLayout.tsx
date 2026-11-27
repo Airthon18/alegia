@@ -505,7 +505,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   flex: 1, 
                   display: "flex", 
                   flexDirection: "column",
-                  height: section === "chat" || section === "prediccion" ? "calc(100vh - 70px)" : "auto" 
+                  height: section === "chat" || section === "prediccion" ? "calc(100dvh - var(--header-h))" : "auto"
                 }}
               >
                 {children(section, setSection)}
